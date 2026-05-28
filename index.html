@@ -588,24 +588,28 @@ async function handleRecordingStop() {
 // ── 音訊轉 WAV (16kHz mono) ──────────────────────────────────────────────────
 async function convertToWav(blob) {
   const arrayBuffer = await blob.arrayBuffer();
-  const decodeCtx = new OfflineAudioContext(1, 1, 16000);
+
+  // OfflineAudioContext 對 WebM/Opus 解碼不可靠；改用 AudioContext 再關閉
+  const ac = new AudioContext();
   let decoded;
   try {
-    decoded = await decodeCtx.decodeAudioData(arrayBuffer);
-  } catch {
-    // fallback: 直接回傳原始 blob
+    decoded = await ac.decodeAudioData(arrayBuffer);
+  } catch (e) {
+    log(`音訊解碼失敗（${e.message}），無法轉換格式`, 'err');
     return blob;
+  } finally {
+    ac.close();
   }
 
-  const offlineCtx = new OfflineAudioContext(1, decoded.duration * 16000, 16000);
-  const src = offlineCtx.createBufferSource();
+  const numSamples = Math.ceil(decoded.duration * 16000);
+  const offCtx = new OfflineAudioContext(1, numSamples, 16000);
+  const src = offCtx.createBufferSource();
   src.buffer = decoded;
-  src.connect(offlineCtx.destination);
+  src.connect(offCtx.destination);
   src.start(0);
-  const rendered = await offlineCtx.startRendering();
+  const rendered = await offCtx.startRendering();
 
-  const pcm = rendered.getChannelData(0);
-  return encodeWAV(pcm, 16000);
+  return encodeWAV(rendered.getChannelData(0), 16000);
 }
 
 function encodeWAV(samples, sampleRate) {
