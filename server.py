@@ -37,6 +37,18 @@ from urllib.parse import urlparse
 
 import numpy as np
 
+# ── multipart/form-data 解析 ──────────────────────────────────────────────────
+def _extract_multipart_file(body: bytes, boundary: str) -> bytes:
+    """從 multipart/form-data 中提取第一個含 filename 的欄位 bytes"""
+    sep = f"--{boundary}".encode()
+    for part in body.split(sep):
+        if b"\r\n\r\n" not in part:
+            continue
+        header_block, file_data = part.split(b"\r\n\r\n", 1)
+        if b"filename=" in header_block:
+            return file_data.rstrip(b"\r\n-")
+    return body  # fallback: 回傳原始內容
+
 # ── 全域狀態 ─────────────────────────────────────────────────────────────────
 _processor = None
 _model = None
@@ -189,8 +201,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(503, {"error": "模型尚未就緒"})
                 return
 
+            content_type   = self.headers.get("Content-Type", "")
             content_length = int(self.headers.get("Content-Length", 0))
-            audio_bytes = self.rfile.read(content_length)
+            raw_body       = self.rfile.read(content_length)
+
+            if "multipart/form-data" in content_type and "boundary=" in content_type:
+                boundary    = content_type.split("boundary=")[-1].strip()
+                audio_bytes = _extract_multipart_file(raw_body, boundary)
+            else:
+                audio_bytes = raw_body
 
             try:
                 text = transcribe_audio(audio_bytes)
