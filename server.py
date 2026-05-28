@@ -80,21 +80,27 @@ def load_model():
 
 def transcribe_audio(audio_bytes: bytes) -> str:
     """
-    接收原始 WAV bytes → 回傳辨識文字
+    接收任意格式音訊 bytes → 回傳辨識文字
 
     步驟：
-      1. librosa.load() 讀取任意格式並重新取樣至 16kHz mono
+      1. PyAV 解碼任意格式（WAV/WebM/Opus/MP4 等），重新取樣至 16kHz mono
       2. Wav2Vec2Processor 正規化並產生 input_values tensor
       3. 模型前向傳播取得 logits（shape: [1, time_frames, vocab_size]）
       4. torch.argmax → 每幀最可能的 token id
       5. processor.batch_decode → 合併 CTC 序列為文字
     """
     import torch
-    import librosa
+    import av
 
-    audio_buffer = io.BytesIO(audio_bytes)
-    # librosa 自動重新取樣並轉 mono
-    speech, _ = librosa.load(audio_buffer, sr=TARGET_SR, mono=True)
+    container = av.open(io.BytesIO(audio_bytes))
+    resampler = av.AudioResampler(format="fltp", layout="mono", rate=TARGET_SR)
+    chunks = []
+    for frame in container.decode(audio=0):
+        for r in resampler.resample(frame):
+            chunks.append(r.to_ndarray()[0])
+    for r in resampler.resample(None):  # flush
+        chunks.append(r.to_ndarray()[0])
+    speech = np.concatenate(chunks).astype(np.float32) if chunks else np.zeros(1, dtype=np.float32)
 
     # 正規化：Processor 預期 float32 array，值域約 [-1, 1]
     inputs = _processor(
