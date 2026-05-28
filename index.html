@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>離線語音指令系統 — wav2vec2</title>
+<style>
+:root {
+  --bg:       #0d0d1a;
+  --surface:  #151528;
+  --card:     #1c1c35;
+  --border:   #2a2a4a;
+  --accent:   #6c63ff;
+  --accent2:  #a78bfa;
+  --green:    #34d399;
+  --red:      #f87171;
+  --yellow:   #fbbf24;
+  --text:     #e2e2f0;
+  --muted:    #8888aa;
+  --radius:   12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--text);
+  font-family:'Segoe UI',system-ui,sans-serif;
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+  padding:24px 16px 48px;
+}
+h1{font-size:1.6rem;font-weight:700;letter-spacing:.04em}
+h1 span{color:var(--accent2);font-weight:400;font-size:.95rem}
+.subtitle{color:var(--muted);font-size:.85rem;margin-top:4px}
+
+/* ── 頂部狀態列 ────────────────────────── */
+#status-bar{
+  display:flex;align-items:center;gap:10px;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:10px 18px;
+  margin:20px 0 0;width:100%;max-width:820px;
+}
+#status-dot{width:10px;height:10px;border-radius:50%;background:var(--yellow);flex-shrink:0;transition:background .3s}
+#status-dot.ready{background:var(--green);box-shadow:0 0 8px var(--green)}
+#status-dot.error{background:var(--red)}
+#status-text{font-size:.88rem;color:var(--muted)}
+#model-badge{
+  margin-left:auto;font-size:.75rem;color:var(--accent2);
+  background:#1a1a38;border:1px solid #3333664d;
+  border-radius:6px;padding:3px 8px;font-family:monospace;
+}
+
+/* ── 主體 grid ──────────────────────────── */
+.layout{
+  display:grid;
+  grid-template-columns:1fr 320px;
+  gap:16px;width:100%;max-width:820px;margin-top:16px;
+}
+@media(max-width:640px){.layout{grid-template-columns:1fr}}
+
+/* ── 通用卡片 ───────────────────────────── */
+.card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:18px;
+}
+.card-title{
+  font-size:.8rem;font-weight:600;letter-spacing:.08em;
+  color:var(--muted);text-transform:uppercase;margin-bottom:14px;
+}
+
+/* ── 錄音區 ─────────────────────────────── */
+#waveform-canvas{
+  width:100%;height:80px;border-radius:8px;
+  background:#0a0a18;display:block;margin-bottom:14px;
+}
+.record-row{display:flex;gap:12px;align-items:center}
+#record-btn{
+  width:60px;height:60px;border-radius:50%;border:none;cursor:pointer;
+  background:linear-gradient(135deg,var(--accent),#8b5cf6);
+  color:#fff;font-size:1.5rem;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 4px 20px #6c63ff44;transition:all .2s;flex-shrink:0;
+}
+#record-btn:hover{transform:scale(1.05)}
+#record-btn.recording{background:linear-gradient(135deg,#ef4444,#dc2626);animation:pulse 1s infinite}
+#record-btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 #ef444455}50%{box-shadow:0 0 0 12px #ef444400}}
+.record-info{flex:1}
+#record-label{font-size:.95rem;font-weight:500;margin-bottom:4px}
+#record-hint{font-size:.78rem;color:var(--muted)}
+
+/* ── 辨識結果 ───────────────────────────── */
+#transcript-box{
+  min-height:56px;background:#0a0a18;border:1px solid var(--border);
+  border-radius:8px;padding:12px 14px;margin-bottom:12px;
+  font-size:1.1rem;line-height:1.6;color:var(--text);
+  transition:border-color .3s;
+}
+#transcript-box.active{border-color:var(--accent)}
+#transcript-box.empty{color:var(--muted);font-size:.88rem;font-style:italic}
+
+/* ── 指令匹配結果 ───────────────────────── */
+#match-result{
+  display:none;border-radius:8px;padding:12px 14px;margin-bottom:12px;
+  border-left:4px solid var(--green);background:#0d2218;
+}
+#match-result.no-match{border-color:var(--red);background:#200e0e}
+#match-name{font-weight:600;font-size:.95rem}
+#match-action{font-size:.82rem;color:var(--muted);margin-top:4px}
+
+/* ── 確認流程 ───────────────────────────── */
+#confirm-panel{
+  display:none;border:1px solid var(--yellow);border-radius:8px;
+  background:#1c1800;padding:14px;
+}
+#confirm-question{font-size:.9rem;margin-bottom:12px;color:var(--yellow)}
+.confirm-btns{display:flex;gap:10px}
+.confirm-btns button{
+  flex:1;padding:8px;border-radius:8px;border:1px solid;cursor:pointer;
+  font-size:.85rem;font-weight:500;transition:all .15s;
+}
+#btn-yes{background:#0d2218;color:var(--green);border-color:var(--green)}
+#btn-yes:hover{background:var(--green);color:#0a0a0a}
+#btn-no{background:#200e0e;color:var(--red);border-color:var(--red)}
+#btn-no:hover{background:var(--red);color:#0a0a0a}
+
+/* ── 執行結果 ───────────────────────────── */
+#exec-result{
+  display:none;border-radius:8px;padding:12px 14px;
+  background:#0a0a18;border:1px solid var(--border);font-size:.88rem;
+}
+
+/* ── 側欄：指令列表 ─────────────────────── */
+#cmd-list{display:flex;flex-direction:column;gap:8px}
+.cmd-item{
+  background:#0e0e20;border:1px solid var(--border);border-radius:8px;
+  padding:10px 12px;cursor:default;transition:border-color .2s;
+}
+.cmd-item.matched{border-color:var(--accent);background:#13132b}
+.cmd-kw{font-size:.82rem;color:var(--accent2);margin-bottom:3px}
+.cmd-desc{font-size:.78rem;color:var(--muted)}
+
+/* ── 技術說明面板 ───────────────────────── */
+#tech-panel{margin-top:16px;width:100%;max-width:820px}
+#tech-toggle{
+  width:100%;background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:12px 18px;cursor:pointer;
+  color:var(--text);font-size:.88rem;text-align:left;
+  display:flex;justify-content:space-between;align-items:center;
+}
+#tech-toggle:hover{border-color:var(--accent)}
+#tech-body{
+  display:none;background:var(--card);border:1px solid var(--border);
+  border-top:none;border-radius:0 0 var(--radius) var(--radius);
+  padding:20px;font-size:.85rem;line-height:1.7;color:var(--muted);
+}
+#tech-body.open{display:block}
+.pipeline{
+  display:flex;flex-direction:column;gap:6px;margin:14px 0;
+}
+.pipeline-step{
+  display:flex;gap:12px;align-items:flex-start;
+  background:#0a0a18;border-radius:8px;padding:10px 14px;
+}
+.step-num{
+  font-size:.7rem;font-weight:700;color:var(--bg);
+  background:var(--accent);border-radius:50%;width:20px;height:20px;
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;
+}
+.step-title{color:var(--text);font-weight:600;font-size:.83rem}
+.step-desc{font-size:.78rem;color:var(--muted);margin-top:2px}
+pre.code-block{
+  background:#06060f;border:1px solid var(--border);border-radius:8px;
+  padding:12px 14px;font-size:.78rem;overflow-x:auto;margin-top:10px;
+  color:#a5b4fc;line-height:1.6;
+}
+
+/* ── 日誌 ───────────────────────────────── */
+#log-area{
+  margin-top:16px;width:100%;max-width:820px;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:14px 18px;
+}
+#log-title{font-size:.78rem;color:var(--muted);margin-bottom:10px;letter-spacing:.06em;text-transform:uppercase}
+#log-list{
+  display:flex;flex-direction:column;gap:4px;
+  max-height:140px;overflow-y:auto;
+}
+.log-entry{font-size:.78rem;font-family:monospace;color:var(--muted)}
+.log-entry .ts{color:#4444664d;margin-right:8px}
+.log-entry.info .msg{color:var(--text)}
+.log-entry.ok .msg{color:var(--green)}
+.log-entry.warn .msg{color:var(--yellow)}
+.log-entry.err .msg{color:var(--red)}
+</style>
+</head>
+<body>
+
+<h1>離線語音指令系統 <span>powered by</span></h1>
+<div class="subtitle">wav2vec 2.0 &nbsp;|&nbsp; 完全離線推理，無需網路連線</div>
+
+<!-- 狀態列 -->
+<div id="status-bar">
+  <div id="status-dot"></div>
+  <span id="status-text">正在連接伺服器...</span>
+  <div id="model-badge">facebook/wav2vec2-base-960h</div>
+</div>
+
+<!-- 主體 -->
+<div class="layout">
+
+  <!-- 左欄：錄音 + 結果 -->
+  <div style="display:flex;flex-direction:column;gap:16px">
+
+    <!-- 錄音區 -->
+    <div class="card">
+      <div class="card-title">語音輸入</div>
+      <canvas id="waveform-canvas"></canvas>
+      <div class="record-row">
+        <button id="record-btn" disabled>
+          <span id="mic-icon">&#127908;</span>
+        </button>
+        <div class="record-info">
+          <div id="record-label">等待模型就緒</div>
+          <div id="record-hint">模型載入後按下按鈕或空白鍵開始錄音</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 辨識結果 -->
+    <div class="card">
+      <div class="card-title">辨識結果</div>
+      <div id="transcript-box" class="empty">尚未錄音</div>
+
+      <!-- 指令匹配 -->
+      <div id="match-result">
+        <div id="match-name"></div>
+        <div id="match-action"></div>
+      </div>
+
+      <!-- 確認面板 -->
+      <div id="confirm-panel">
+        <div id="confirm-question"></div>
+        <div class="confirm-btns">
+          <button id="btn-yes">確認執行</button>
+          <button id="btn-no">取消</button>
+        </div>
+      </div>
+
+      <!-- 執行結果 -->
+      <div id="exec-result"></div>
+    </div>
+
+  </div>
+
+  <!-- 右欄：指令列表 -->
+  <div class="card">
+    <div class="card-title">可用指令</div>
+    <div id="cmd-list"></div>
+  </div>
+
+</div>
+
+<!-- 技術說明 -->
+<div id="tech-panel">
+  <button id="tech-toggle">
+    <span>wav2vec 2.0 技術說明</span>
+    <span id="tech-arrow">&#9660;</span>
+  </button>
+  <div id="tech-body">
+    <p><strong style="color:var(--text)">wav2vec 2.0</strong>（Meta AI, 2020）是一套自監督語音表示學習框架，透過大量<em>未標記</em>音訊學習語音特徵，再以少量標記資料 fine-tune，即可達到優秀的語音辨識效果。</p>
+
+    <div class="pipeline">
+      <div class="pipeline-step">
+        <div class="step-num">1</div>
+        <div>
+          <div class="step-title">Feature Encoder（CNN）</div>
+          <div class="step-desc">7 層 1D 卷積網路，接收原始 16kHz PCM 波形，每 20ms 輸出一個 512-dim 局部特徵向量。不需要手工特徵（MFCC 等）。</div>
+        </div>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-num">2</div>
+        <div>
+          <div class="step-title">Quantization（訓練階段）</div>
+          <div class="step-desc">Gumbel-Softmax 將連續特徵映射到離散「語音單元」（codebook），做為對比學習目標。推理時跳過此步。</div>
+        </div>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-num">3</div>
+        <div>
+          <div class="step-title">Transformer Encoder（24 層）</div>
+          <div class="step-desc">全域自注意力建立上下文表示，每幀都能「看到」整段音訊，捕捉長距離音韻依賴。large 模型共 317M 參數。</div>
+        </div>
+      </div>
+      <div class="pipeline-step">
+        <div class="step-num">4</div>
+        <div>
+          <div class="step-title">CTC Head + Greedy Decode</div>
+          <div class="step-desc">線性層將每幀映射到字符機率，再以 CTC（Connectionist Temporal Classification）處理對齊問題，最終輸出文字序列。</div>
+        </div>
+      </div>
+    </div>
+
+    <p style="margin-bottom:8px;color:var(--text);font-size:.82rem">本系統推理程式碼（<code>server.py</code>核心片段）：</p>
+    <pre class="code-block"># 1. 讀取音訊並重新取樣至 16kHz
+speech, _ = librosa.load(audio_buffer, sr=16000, mono=True)
+
+# 2. 正規化輸入（Z-score by processor）
+inputs = processor(speech, sampling_rate=16000, return_tensors="pt")
+
+# 3. 模型前向傳播
+with torch.no_grad():
+    logits = model(**inputs).logits   # [1, time_frames, vocab_size]
+
+# 4. CTC greedy decode
+predicted_ids = torch.argmax(logits, dim=-1)
+text = processor.batch_decode(predicted_ids)[0]</pre>
+  </div>
+</div>
+
+<!-- 日誌 -->
+<div id="log-area">
+  <div id="log-title">系統日誌</div>
+  <div id="log-list"></div>
+</div>
+
+<script>
+// ── 指令定義 ─────────────────────────────────────────────────────────────────
+const COMMANDS = [
+  // ★ 內建實作
+  { id:'time',      keywords:['what time','current time','tell me the time','time please'], label:'報告時間',  action:'語音播報目前時間（內建）',       api:null                    },
+  { id:'music_on',  keywords:['play music','start music','music on','music please'],        label:'播放音樂',  action:'播放環境音樂 — Web Audio（內建）',api:null                    },
+  { id:'music_off', keywords:['stop music','pause music','music off'],                      label:'停止音樂',  action:'停止環境音樂（內建）',           api:null                    },
+  // 模擬 API
+  { id:'light_on',  keywords:['turn on the light','lights on','turn on light'],             label:'開燈',      action:'將室內燈光開啟',                 api:'POST /api/light/on'    },
+  { id:'light_off', keywords:['turn off the light','lights off','turn off light'],          label:'關燈',      action:'將室內燈光關閉',                 api:'POST /api/light/off'   },
+  { id:'weather',   keywords:['weather','temperature','forecast'],                          label:'查詢天氣',  action:'查詢今日天氣預報',               api:'GET /api/weather'      },
+  { id:'volume_up', keywords:['volume up','louder','increase volume'],                      label:'增加音量',  action:'系統音量 +20%',                  api:'POST /api/volume/up'   },
+  { id:'volume_dn', keywords:['volume down','quieter','decrease volume'],                   label:'降低音量',  action:'系統音量 -20%',                  api:'POST /api/volume/down' },
+];
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const statusDot     = document.getElementById('status-dot');
+const statusText    = document.getElementById('status-text');
+const recordBtn     = document.getElementById('record-btn');
+const micIcon       = document.getElementById('mic-icon');
+const recordLabel   = document.getElementById('record-label');
+const recordHint    = document.getElementById('record-hint');
+const transcriptBox = document.getElementById('transcript-box');
+const matchResult   = document.getElementById('match-result');
+const matchName     = document.getElementById('match-name');
+const matchAction   = document.getElementById('match-action');
+const confirmPanel  = document.getElementById('confirm-panel');
+const confirmQ      = document.getElementById('confirm-question');
+const btnYes        = document.getElementById('btn-yes');
+const btnNo         = document.getElementById('btn-no');
+const execResult    = document.getElementById('exec-result');
+const cmdList       = document.getElementById('cmd-list');
+const logList       = document.getElementById('log-list');
+const canvas        = document.getElementById('waveform-canvas');
+const ctx2d         = canvas.getContext('2d');
+const techToggle    = document.getElementById('tech-toggle');
+const techBody      = document.getElementById('tech-body');
+const techArrow     = document.getElementById('tech-arrow');
+
+// ── 狀態 ─────────────────────────────────────────────────────────────────────
+let modelReady = false;
+let isRecording = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let audioCtx = null;
+let analyser = null;
+let animFrameId = null;
+let pendingCommand = null;
+let stream = null;
+
+// ── 環境音樂狀態 ──────────────────────────────────────────────────────────────
+let musicCtx = null;
+let musicGain = null;
+let musicOscs = [];
+let isMusicPlaying = false;
+
+function startMusic() {
+  if (isMusicPlaying) return;
+  musicCtx = new AudioContext();
+  musicGain = musicCtx.createGain();
+  musicGain.gain.setValueAtTime(0, musicCtx.currentTime);
+  musicGain.gain.linearRampToValueAtTime(0.18, musicCtx.currentTime + 1.5);
+  musicGain.connect(musicCtx.destination);
+  // C major 和弦 + 八度泛音，輕微失諧產生自然顫音
+  [130.81, 164.81, 196.00, 261.63, 329.63, 392.00].forEach((f, i) => {
+    const osc = musicCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = f + (i % 2 === 0 ? 0.3 : -0.3);
+    const g = musicCtx.createGain();
+    g.gain.value = 1 / 7;
+    osc.connect(g);
+    g.connect(musicGain);
+    osc.start();
+    musicOscs.push(osc);
+  });
+  isMusicPlaying = true;
+}
+
+function stopMusic() {
+  if (!isMusicPlaying || !musicGain) return;
+  musicGain.gain.linearRampToValueAtTime(0, musicCtx.currentTime + 1.2);
+  setTimeout(() => {
+    musicOscs.forEach(o => { try { o.stop(); } catch {} });
+    musicOscs = [];
+    musicCtx.close();
+    musicCtx = null;
+    musicGain = null;
+    isMusicPlaying = false;
+  }, 1300);
+}
+
+// ── 日誌 ─────────────────────────────────────────────────────────────────────
+function log(msg, level = 'info') {
+  const now = new Date();
+  const ts = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+  const el = document.createElement('div');
+  el.className = `log-entry ${level}`;
+  el.innerHTML = `<span class="ts">${ts}</span><span class="msg">${msg}</span>`;
+  logList.prepend(el);
+  if (logList.children.length > 50) logList.lastChild.remove();
+}
+
+// ── 渲染指令列表 ─────────────────────────────────────────────────────────────
+function renderCommands(matchedId = null) {
+  cmdList.innerHTML = '';
+  COMMANDS.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'cmd-item' + (c.id === matchedId ? ' matched' : '');
+    el.dataset.id = c.id;
+    el.innerHTML = `<div class="cmd-kw">${c.keywords.join(' / ')}</div><div class="cmd-desc">${c.action}</div>`;
+    cmdList.appendChild(el);
+  });
+}
+renderCommands();
+
+// ── 輪詢模型狀態 ─────────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (data.ready) {
+      statusDot.className = 'ready';
+      statusText.textContent = '模型就緒，可以開始錄音';
+      recordBtn.disabled = false;
+      recordLabel.textContent = '按下錄音 (或空白鍵)';
+      recordHint.textContent = '說出指令後自動停止（約 3 秒靜音）';
+      modelReady = true;
+      log('wav2vec2 模型載入完成，就緒', 'ok');
+    } else if (data.error) {
+      statusDot.className = 'error';
+      statusText.textContent = '模型載入失敗：' + data.error;
+      log('模型載入失敗：' + data.error, 'err');
+    } else {
+      statusText.textContent = data.loading ? '正在載入模型（首次約需 1~3 分鐘）...' : '等待伺服器...';
+      setTimeout(pollStatus, 2000);
+    }
+  } catch {
+    statusText.textContent = '無法連線到 Python 伺服器（請先執行 server.py）';
+    log('連線失敗，請確認 server.py 正在執行', 'err');
+    setTimeout(pollStatus, 3000);
+  }
+}
+pollStatus();
+
+// ── 波形視覺化 ───────────────────────────────────────────────────────────────
+function resizeCanvas() {
+  canvas.width  = canvas.offsetWidth  * devicePixelRatio;
+  canvas.height = canvas.offsetHeight * devicePixelRatio;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+function drawIdle() {
+  const W = canvas.width, H = canvas.height;
+  ctx2d.clearRect(0, 0, W, H);
+  ctx2d.strokeStyle = '#2a2a4a';
+  ctx2d.lineWidth = 1;
+  ctx2d.beginPath();
+  ctx2d.moveTo(0, H / 2);
+  ctx2d.lineTo(W, H / 2);
+  ctx2d.stroke();
+}
+drawIdle();
+
+function drawWaveform() {
+  if (!analyser) return;
+  const bufLen = analyser.frequencyBinCount;
+  const data = new Uint8Array(bufLen);
+  analyser.getByteTimeDomainData(data);
+
+  const W = canvas.width, H = canvas.height;
+  ctx2d.clearRect(0, 0, W, H);
+  ctx2d.strokeStyle = '#6c63ff';
+  ctx2d.lineWidth = 2;
+  ctx2d.beginPath();
+
+  const sliceW = W / bufLen;
+  let x = 0;
+  for (let i = 0; i < bufLen; i++) {
+    const v = data[i] / 128.0;
+    const y = (v * H) / 2;
+    i === 0 ? ctx2d.moveTo(x, y) : ctx2d.lineTo(x, y);
+    x += sliceW;
+  }
+  ctx2d.stroke();
+  animFrameId = requestAnimationFrame(drawWaveform);
+}
+
+// ── 錄音邏輯 ─────────────────────────────────────────────────────────────────
+async function startRecording() {
+  if (!modelReady || isRecording) return;
+  clearResults();
+  isRecording = true;
+  audioChunks = [];
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount:1, sampleRate:16000 } });
+  } catch (e) {
+    log('無法取得麥克風：' + e.message, 'err');
+    isRecording = false;
+    return;
+  }
+
+  // 波形分析器
+  audioCtx = new AudioContext();
+  const source = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  drawWaveform();
+
+  mediaRecorder = new MediaRecorder(stream);
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.onstop = handleRecordingStop;
+  mediaRecorder.start();
+
+  recordBtn.classList.add('recording');
+  micIcon.textContent = '⏹';
+  recordLabel.textContent = '錄音中...';
+  recordHint.textContent = '再次按下按鈕或空白鍵停止';
+  log('開始錄音');
+}
+
+function stopRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  mediaRecorder.stop();
+  stream.getTracks().forEach(t => t.stop());
+  cancelAnimationFrame(animFrameId);
+  analyser = null;
+  drawIdle();
+  recordBtn.classList.remove('recording');
+  micIcon.textContent = '🎙';
+  recordLabel.textContent = '處理中...';
+  recordHint.textContent = '正在進行 wav2vec2 推理';
+  recordBtn.disabled = true;
+  log('停止錄音，傳送至 wav2vec2 推理中...');
+}
+
+async function handleRecordingStop() {
+  const blob = new Blob(audioChunks, { type: 'audio/webm' });
+  const wavBlob = await convertToWav(blob);
+
+  try {
+    const formData = new FormData();
+    formData.append('audio', wavBlob, 'audio.wav');
+    const res = await fetch('/api/transcribe', { method:'POST', body:formData });
+    const data = await res.json();
+
+    if (data.error) throw new Error(data.error);
+
+    const text = data.text.trim();
+    log(`辨識結果：「${text}」`, 'ok');
+    showTranscript(text);
+    matchCommand(text);
+  } catch (e) {
+    log('推理失敗：' + e.message, 'err');
+    showTranscript('（辨識失敗：' + e.message + '）');
+  } finally {
+    recordBtn.disabled = false;
+    recordLabel.textContent = '按下錄音 (或空白鍵)';
+    recordHint.textContent = '說出指令後停止錄音';
+  }
+}
+
+// ── 音訊轉 WAV (16kHz mono) ──────────────────────────────────────────────────
+async function convertToWav(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const decodeCtx = new OfflineAudioContext(1, 1, 16000);
+  let decoded;
+  try {
+    decoded = await decodeCtx.decodeAudioData(arrayBuffer);
+  } catch {
+    // fallback: 直接回傳原始 blob
+    return blob;
+  }
+
+  const offlineCtx = new OfflineAudioContext(1, decoded.duration * 16000, 16000);
+  const src = offlineCtx.createBufferSource();
+  src.buffer = decoded;
+  src.connect(offlineCtx.destination);
+  src.start(0);
+  const rendered = await offlineCtx.startRendering();
+
+  const pcm = rendered.getChannelData(0);
+  return encodeWAV(pcm, 16000);
+}
+
+function encodeWAV(samples, sampleRate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buf);
+  const writeStr = (off, str) => { for (let i=0;i<str.length;i++) view.setUint8(off+i, str.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeStr(8, 'WAVE'); writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+  let off = 44;
+  for (let i = 0; i < samples.length; i++, off += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+// ── 顯示辨識文字 ─────────────────────────────────────────────────────────────
+function showTranscript(text) {
+  transcriptBox.classList.remove('empty', 'active');
+  transcriptBox.textContent = text || '（無內容）';
+  if (text) transcriptBox.classList.add('active');
+}
+
+// ── 指令匹配 ─────────────────────────────────────────────────────────────────
+function matchCommand(text) {
+  const normalized = text.replace(/\s/g, '');
+  const cmd = COMMANDS.find(c => c.keywords.some(kw => normalized.includes(kw)));
+  renderCommands(cmd ? cmd.id : null);
+
+  if (!cmd) {
+    matchResult.style.display = 'block';
+    matchResult.className = 'no-match';
+    matchName.textContent = '未匹配到任何指令';
+    matchAction.textContent = '請重新錄音，嘗試其他關鍵字';
+    log('未匹配指令', 'warn');
+    return;
+  }
+
+  matchResult.style.display = 'block';
+  matchResult.className = '';
+  matchName.textContent = `匹配：${cmd.label}`;
+  matchAction.textContent = cmd.action + (cmd.api ? `  (${cmd.api})` : '');
+  log(`匹配指令：${cmd.label}`, 'ok');
+
+  pendingCommand = cmd;
+  showConfirm(cmd);
+}
+
+// ── 確認流程 ─────────────────────────────────────────────────────────────────
+function showConfirm(cmd) {
+  confirmQ.textContent = `確認執行「${cmd.label}」嗎？（${cmd.action}）`;
+  confirmPanel.style.display = 'block';
+
+  // TTS 朗讀確認提示
+  speak(`確認執行${cmd.label}嗎？`);
+}
+
+btnYes.addEventListener('click', executeCommand);
+btnNo.addEventListener('click', () => {
+  confirmPanel.style.display = 'none';
+  pendingCommand = null;
+  showExec('已取消', '#f87171');
+  log('使用者取消指令', 'warn');
+});
+
+function executeCommand() {
+  if (!pendingCommand) return;
+  const cmd = pendingCommand;
+  pendingCommand = null;
+  confirmPanel.style.display = 'none';
+
+  // ── 內建實作 ────────────────────────────────────────────────────────────────
+  if (cmd.id === 'time') {
+    const now = new Date();
+    const h = now.getHours(), m = String(now.getMinutes()).padStart(2, '0');
+    const period = h < 12 ? '上午' : '下午';
+    const h12 = h % 12 || 12;
+    const msg = `現在時間是 ${period} ${h12} 點 ${m} 分`;
+    speak(msg);
+    showExec(msg, 'var(--green)');
+    log(`執行：${msg}`, 'ok');
+    return;
+  }
+
+  if (cmd.id === 'music_on') {
+    startMusic();
+    const msg = '環境音樂已開始播放（C major 和弦）';
+    speak('音樂開始');
+    showExec(msg, 'var(--green)');
+    log(`執行：${msg}`, 'ok');
+    return;
+  }
+
+  if (cmd.id === 'music_off') {
+    stopMusic();
+    const msg = isMusicPlaying ? '音樂淡出中...' : '音樂已停止';
+    speak('音樂停止');
+    showExec(msg, 'var(--green)');
+    log(`執行：${msg}`, 'ok');
+    return;
+  }
+
+  // ── 模擬 API 呼叫 ────────────────────────────────────────────────────────────
+  const msg = `已執行：${cmd.label}${cmd.api ? `\n→ ${cmd.api}` : ''}`;
+  speak(`${cmd.label}已執行`);
+  showExec(msg, 'var(--green)');
+  log(`執行：${cmd.label}`, 'ok');
+}
+
+function showExec(msg, color) {
+  execResult.style.display = 'block';
+  execResult.style.color = color || 'var(--text)';
+  execResult.style.borderColor = color || 'var(--border)';
+  execResult.style.whiteSpace = 'pre-line';
+  execResult.textContent = msg;
+}
+
+function clearResults() {
+  transcriptBox.textContent = '尚未錄音';
+  transcriptBox.className = 'empty';
+  matchResult.style.display = 'none';
+  confirmPanel.style.display = 'none';
+  execResult.style.display = 'none';
+  pendingCommand = null;
+  renderCommands();
+}
+
+// ── TTS ──────────────────────────────────────────────────────────────────────
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'zh-TW';
+  window.speechSynthesis.speak(u);
+}
+
+// ── 鍵盤快捷鍵 ──────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT') {
+    e.preventDefault();
+    if (isRecording) stopRecording(); else startRecording();
+  }
+  if (e.code === 'Escape') {
+    if (isRecording) stopRecording();
+    clearResults();
+  }
+});
+
+recordBtn.addEventListener('click', () => {
+  if (isRecording) stopRecording(); else startRecording();
+});
+
+// ── 技術說明切換 ─────────────────────────────────────────────────────────────
+techToggle.addEventListener('click', () => {
+  const open = techBody.classList.toggle('open');
+  techArrow.textContent = open ? '▲' : '▼';
+});
+
+log('前端初始化完成，等待 Python 伺服器...', 'info');
+</script>
+</body>
+</html>
