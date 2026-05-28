@@ -642,8 +642,8 @@ function showTranscript(text) {
 
 // ── 指令匹配 ─────────────────────────────────────────────────────────────────
 function matchCommand(text) {
-  const normalized = text.replace(/\s/g, '');
-  const cmd = COMMANDS.find(c => c.keywords.some(kw => normalized.includes(kw)));
+  const normalized = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  const cmd = COMMANDS.find(c => c.keywords.some(kw => normalized.includes(kw.toLowerCase())));
   renderCommands(cmd ? cmd.id : null);
 
   if (!cmd) {
